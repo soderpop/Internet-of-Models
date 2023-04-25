@@ -1,0 +1,147 @@
+import torch
+import skfuzzy as fuzz
+from networkx import Graph
+import scipy.cluster.hierarchy as sch
+import numpy as np
+import pickle
+
+class FractalAutoML(torch.nn.Module):
+    def __init__(self, input_size, output_size, num_rules, depth):
+        super(FractalAutoML, self).__init__()
+        self.input_size = input_size
+        self.output_size = output_size
+        self.num_rules = num_rules
+        self.depth = depth
+        self.som = np.random.rand(depth, input_size)
+        self.systems = []
+        for i in range(num_rules):
+            rule = []
+            for j in range(input_size):
+                rule.append(fuzz.Antecedent(fuzz.gaussmf('input'+str(j)+str(i), 0, 1)))
+            for j in range(output_size):
+                rule.append(fuzz.Consequent(fuzz.gaussmf('output'+str(j)+str(i), 0, 1)))
+            self.systems.append(fuzz.control.ControlSystem(rule))
+
+    def forward(self, x):
+        # Update SOM
+        for sample in x:
+            winner = np.unravel_index(np.linalg.norm(self.som - sample, axis=1).argmin(), self.som.shape)
+            for i in range(input_size):
+                self.som[winner[0], i] = sample[i]
+
+        # Compute Fuzzy System Outputs
+        inputs = []
+        for i in range(input_size):
+            inputs.append(self.som[:, i])
+        input_dict = {}
+        for i in range(input_size):
+            input_dict['input'+str(i)] = inputs[i]
+        output_dicts = []
+        for i in range(len(self.systems)):
+            output_dicts.append(self.systems[i].simulate(input_dict))
+        outputs = []
+        for i in range(output_size):
+            output_cluster = []
+            for output_dict in output_dicts:
+                output_cluster.append(output_dict['output'+str(i)])
+            output_cluster = torch.stack(output_cluster, dim=0)
+            output = output_cluster.mean(dim=0)
+            outputs.append(output)
+        return torch.stack(outputs, dim=1)
+
+    def train(self, train_data, epochs=10):
+        for epoch in range(epochs):
+            # Forward pass
+            outputs = self(train_data)
+            # Compute loss
+            loss = torch.mean((outputs - train_labels)**2)
+            # Backpropagate
+            loss.backward()
+            # Update parameters
+            self.optimizer.step()
+            # Print loss
+            print(loss.item())
+
+    def evaluate(self, test_data):
+        outputs = self(test_data)
+        loss = torch.mean((outputs - test_labels)**2)
+        return loss                                                                                                                                                            
+class FuzzyMemory:
+    def __init__(self, graph):
+        self.graph = graph
+        self.peers = []
+        for node in graph.nodes:
+            if node != self.id:
+                self.peers.append(node)
+
+    def send(self, message):
+        for peer in self.peers:
+            self.graph.send(message, peer)
+
+    def receive(self):
+        message = self.graph.receive(self.id)
+        return message
+
+    def update(self, message):
+        self.som = message['som']
+        self.systems = message['systems']
+
+    def broadcast(self, message):
+        for peer in self.peers:
+            self.graph.send(message, peer)
+
+    def learn(self, data):
+        for sample in data:
+            winner = np.unravel_index(np.linalg.norm(self.som - sample, axis=2).argmin(), self.som.shape[:2])
+            for i in range(self.input_size):
+                self.som[winner[0], winner[1], i] = sample[i]
+
+        # Compute FractalAutoML Outputs
+        inputs = []
+        for i in range(self.input_size):
+            inputs.append(self.som[:, :, i].flatten())
+        input_dict = {}
+        for i in range(self.input_size):
+            input_dict['input' + str(i)] = inputs[i]
+        output_dicts = []
+        for i in range(len(self.systems)):
+            output_dicts.append(self.systems[i].simulate(input_dict))
+        outputs = []
+        for i in range(self.output_size):
+            output_cluster = []
+            for output_dict in output_dicts:
+                output_cluster.append(output_dict['output' + str(i)])
+            output_cluster = torch.stack(output_cluster, dim=0)
+            output = output_cluster.mean(dim=0)
+            outputs.append(output)
+        return outputs
+
+    def predict(self, data):
+        # Compute FractalAutoML Outputs
+        inputs = []
+        for i in range(self.input_size):
+            inputs.append(self.som[:, :, i].flatten())
+        input_dict = {}
+        for i in range(self.input_size):
+            input_dict['input' + str(i)] = inputs[i]
+        output_dicts = []
+        for i in range(len(self.systems)):
+            output_dicts.append(self.systems[i].simulate(input_dict))
+        outputs = []
+        for i in range(self.output_size):
+            output_cluster = []
+            for output_dict in output_dicts:
+                output_cluster.append(output_dict['output' + str(i)])
+            output_cluster = torch.stack(output_cluster, dim=0)
+            output = output_cluster.mean(dim=0)
+            outputs.append(output)
+        return outputs
+
+
+    def save(self, filename):
+        with open(filename, 'wb') as f:
+            pickle.dump(self, f)
+
+    def load(self, filename):
+        with open(filename, 'rb') as f:
+            self = pickle.load(f)
